@@ -1,0 +1,9 @@
+[Server]
+host = 192.168.2.107
+port = 64738
+username = client1
+
+[Client]
+debug = false
+sampleRate = 48000
+voxThreshold = -30

@@ -32,6 +32,12 @@
 # Build dir
 build/
 
+# Deps dir
+deps/
+
+# VS Code
+.vscode
+
 ###CMake###
 
 CMakeCache.txt

@@ -4,3 +4,6 @@
 [submodule "deps/googletest"]
 	path = deps/googletest
 	url = https://github.com/google/googletest
+[submodule "deps/wiringPi"]
+	path = deps/wiringPi
+	url = https://github.com/WiringPi/WiringPi

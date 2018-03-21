@@ -116,8 +116,8 @@ static int paOutputCallback(const void *inputBuffer,
 	// if we dont have enough samples in our ring buffer, we have to still supply 0s to the output_buffer
 	const size_t requested_samples = (framesPerBuffer * NUM_CHANNELS);
 	const size_t available_samples = pa_data->out_buf->getRemaining();	
-	logger.info("requested_samples: %d", requested_samples);
-	logger.info("available_samples: %d", available_samples);
+	logger.debug("requested_samples: %d", requested_samples);
+	logger.debug("available_samples: %d", available_samples);
 	if(requested_samples > available_samples) {
 		pa_data->out_buf->top(output_buffer, 0, available_samples);
 		for(size_t i = available_samples; i < requested_samples - available_samples; i++) {
@@ -172,16 +172,16 @@ void setAlsaMasterVolume(long volume)
  * 6. Clean up PortAudio engine
  */
 int main(int argc, char *argv[]) {
-	bool verbose = false;
-	std::string server;
-	int port;
-	std::string username;
-	std::string password;
+	bool cVerbose = false;
+	std::string cServer;
+	int cPort;
+	std::string cUsername;
+	std::string cPassword;
 	int next_option;
-	int sample_rate;
-	int frame_per_buffer;
+	int cSampleRate;
+	int cFramePerBuffer;
 	double output_delay = -1.0;
-	double vox_threshold;	// dB
+	double cVoxThreshold;	// dB
 	std::chrono::duration<double> voice_hold_interval(0.050);	// 50 ms
 	bool voice_target_flag = false;
 	int voice_target = 0;
@@ -197,28 +197,30 @@ int main(int argc, char *argv[]) {
 	boost::property_tree::ptree pt;
 	boost::property_tree::ini_parser::read_ini("configuration.ini", pt);
 
-	server 		= pt.get<std::string>("Server.host", "192.168.2.107");
-	port 		= pt.get<int>("Server.port", 64738);
-	username	= pt.get<std::string>("Server.username", "Client1");
-	verbose 	= pt.get<bool>("Client.debug", false);
-	sample_rate = pt.get<int>("Client.sampleRate", 48000);
-	frame_per_buffer	= pt.get<int>("Client.framePerBuffer", 128);
-	vox_threshold 		= pt.get<double>("Client.voxThreshold", -90);
+	cServer 		= pt.get<std::string>("Server.host", "192.168.2.107");
+	cPort 			= pt.get<int>("Server.port", 64738);
+	cUsername		= pt.get<std::string>("Server.username", "Client1");
+	cPassword		= pt.get<std::string>("Server.password");
+	cVerbose 		= pt.get<bool>("Client.debug", false);
+	cSampleRate 	= pt.get<int>("Client.sampleRate", 48000);
+	cFramePerBuffer	= pt.get<int>("Client.framePerBuffer", 128);
+	cVoxThreshold	= pt.get<double>("Client.voxThreshold", -90);
 
-	if(verbose)
+	if(cVerbose)
 		logger.setPriority(log4cpp::Priority::INFO);
 	
 	// check for valid sample rate
-	if(sample_rate != 48000 && sample_rate != 24000 && sample_rate != 12000) {
+	if(cSampleRate != 48000 && cSampleRate != 24000 && cSampleRate != 12000) {
 		logger.error("--sample-rate option must be 12000, 24000, or 48000");
 		exit(-1);
 	}
 	logger.info("======================================================");
-	logger.info("Server:        %s", server.c_str());
-	logger.info("Port:			%d", port);
-	logger.info("Username:      %s", username.c_str());
-	logger.info("sample rate    %d", sample_rate);
-	logger.info("vox threshold  %f", vox_threshold);
+	logger.info("Server:        %s", cServer.c_str());
+	logger.info("Port:			%d", cPort);
+	logger.info("Username:      %s", cUsername.c_str());
+	logger.info("Password		%s", cPassword.c_str());
+	logger.info("Sample Rate:	%d", cSampleRate);
+	logger.info("Vox Threshold  %f", cVoxThreshold);
 	logger.info("======================================================");
 
 	///////////////////////
@@ -241,7 +243,7 @@ int main(int argc, char *argv[]) {
 	PaStreamParameters outputParameters;
 
 	// set ring buffer size to about 500ms
-	const size_t MAX_SAMPLES = nextPowerOf2(0.5 * sample_rate * NUM_CHANNELS);
+	const size_t MAX_SAMPLES = nextPowerOf2(0.5 * cSampleRate * NUM_CHANNELS);
 	data.rec_buf = std::make_shared<RingBuffer<int16_t>>(MAX_SAMPLES);
 	data.out_buf = std::make_shared<RingBuffer<int16_t>>(MAX_SAMPLES);
 
@@ -257,14 +259,14 @@ int main(int argc, char *argv[]) {
 
 	logger.info("inputParameters.suggestedLatency: %.4f", inputParameters.suggestedLatency);
 
-	err = Pa_OpenStream(&input_stream,         // the input stream
-						&inputParameters,      // input params
-						NULL,                  // output params
-						sample_rate,           // sample rate
-						frame_per_buffer,     // frames per buffer
-						paClipOff,             // we won't output out of range samples so don't bother clipping them
-						paRecordCallback,      // PortAudio callback function
-						&data);                // data pointer
+	err = Pa_OpenStream(&input_stream,		// the input stream
+						&inputParameters,	// input params
+						NULL,				// output params
+						cSampleRate,		// sample rate
+						cFramePerBuffer,	// frames per buffer
+						paClipOff,			// we won't output out of range samples so don't bother clipping them
+						paRecordCallback,	// PortAudio callback function
+						&data);				// data pointer
 
 	logger.info("defaultHighOutputLatency: %.4f", Pa_GetDeviceInfo(inputParameters.device)->defaultHighOutputLatency);
 
@@ -291,8 +293,8 @@ int main(int argc, char *argv[]) {
 	err = Pa_OpenStream(&output_stream,		// the output stream
 						NULL, 				// input params
 						&outputParameters,	// output params
-						sample_rate,		// sample rate
-						frame_per_buffer,	// frames per buffer
+						cSampleRate,		// sample rate
+						cFramePerBuffer,	// frames per buffer
 						paClipOff,      	// we won't output out of range samples so don't bother clipping them
 						paOutputCallback,	// PortAudio callback function
 						&data);				// data pointer
@@ -325,15 +327,15 @@ int main(int argc, char *argv[]) {
 	// This stuff should be on a separate thread
 	MumpiCallback mumble_callback(data.out_buf);
 	mumlib::MumlibConfiguration conf;
-	conf.opusEncoderBitrate = sample_rate;
+	conf.opusEncoderBitrate = cSampleRate;
 	mumlib::Mumlib mum(mumble_callback, conf);
 	mumble_callback.mum = &mum;
 
 	std::thread mumble_main_thread([&]() {		
 		while(!sig_caught) {			
 			try {
-				logger.info("Connecting to %s", server.c_str());
-				mum.connect(server, port, username, password);
+				logger.info("Connecting to %s", cServer.c_str());
+				mum.connect(cServer, cPort, cUsername, cPassword);
 				mum.run();
 			}catch (mumlib::TransportException &exp) {
 				logger.error("TransportException: %s.", exp.what());
@@ -351,7 +353,7 @@ int main(int argc, char *argv[]) {
 		// Opus can encode frames of 2.5, 5, 10, 20, 40, or 60 ms
 		// the Opus RFC 6716 recommends using 20ms frame sizes
 		// so at 48k sample rate, 20ms is 960 samples
-		const int OPUS_FRAME_SIZE = (sample_rate / 1000.0)*20.0;
+		const int OPUS_FRAME_SIZE = (cSampleRate / 1000.0)*20.0;
 
 		logger.info("OPUS_FRAME_SIZE: %d", OPUS_FRAME_SIZE);
 
@@ -384,7 +386,7 @@ int main(int argc, char *argv[]) {
 					}
 					const double rms = std::sqrt(sum / OPUS_FRAME_SIZE);
 					
-					double db = vox_threshold;
+					double db = cVoxThreshold;
 					if(rms > 0.0)
 						db = 20.0 * std::log10(rms);
 
@@ -399,7 +401,7 @@ int main(int argc, char *argv[]) {
 							voice_hold_flag = false;
 					}
 
-					if(db >= vox_threshold || voice_hold_flag)	{ // only tx if vox threshold met
+					if(db >= cVoxThreshold || voice_hold_flag)	{ // only tx if vox threshold met
 						// if(voice_target_flag)
 						// 	mum.sendAudioDataTarget(voice_target, out_buf, OPUS_FRAME_SIZE);
 						// else 

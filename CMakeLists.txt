@@ -30,6 +30,9 @@ add_executable(mumpi ${SOURCES})
 target_link_libraries(mumpi portaudio)
 target_link_libraries(mumpi mumlib)
 
+# COPY FILE CONFIGURATION
+file(COPY configuration.ini
+     DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 # TESTING
 
 #enable_testing()

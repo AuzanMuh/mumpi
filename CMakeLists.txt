@@ -29,6 +29,7 @@ add_executable(mumpi ${SOURCES})
 # LINKING
 target_link_libraries(mumpi portaudio)
 target_link_libraries(mumpi mumlib)
+target_link_libraries(mumpi cppgpio)
 
 # COPY FILE CONFIGURATION
 file(COPY configuration.ini

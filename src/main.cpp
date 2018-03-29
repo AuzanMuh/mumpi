@@ -1,6 +1,6 @@
 #include <getopt.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <thread>
 #include <cmath>
@@ -12,6 +12,7 @@
 #include <log4cpp/OstreamAppender.hh>
 #include <portaudio.h>
 #include <mumlib/Transport.hpp>
+#include "GpioController.hpp"
 #include "MumpiCallback.hpp"
 #include "RingBuffer.hpp"
 
@@ -20,8 +21,6 @@ const int NUM_CHANNELS = 1;
 static log4cpp::Appender *appender = new log4cpp::OstreamAppender("console", &std::cout);
 static log4cpp::Category& logger = log4cpp::Category::getRoot();
 static volatile sig_atomic_t sig_caught = 0;
-// static bool mumble_thread_run_flag = true;
-// static bool input_consumer_thread_run_flag = true;
 
 /**
  * Signal interrupt handler
@@ -63,13 +62,13 @@ static int paRecordCallback(const void *inputBuffer,
                             void *userData ) {
 	int result = paContinue;
 	// cast the pointers to the appropriate types
-	const PaData *pa_data = (const PaData*) userData;
-	int16_t *input_buffer = (int16_t*) inputBuffer;
+	const auto *pa_data = (const PaData*) userData;
+	auto *input_buffer = (int16_t*) inputBuffer;
 	(void) outputBuffer;
 	(void) timeInfo;
 	(void) statusFlags;
 
-	if(inputBuffer != NULL) {
+	if(inputBuffer != nullptr) {
 		// fill ring buffer with samples
 		pa_data->rec_buf->push(input_buffer, 0, framesPerBuffer * NUM_CHANNELS);
 	} else {
@@ -105,8 +104,8 @@ static int paOutputCallback(const void *inputBuffer,
                             void *userData ) {
 	int result = paContinue;
 	// cast the pointers to the appropriate types
-	const PaData *pa_data = (const PaData*) userData;
-	int16_t *output_buffer = (int16_t*) outputBuffer;
+	const auto *pa_data = (const PaData*) userData;
+	auto *output_buffer = (int16_t*) outputBuffer;
 	(void) inputBuffer;
 	(void) timeInfo;
 	(void) framesPerBuffer;
@@ -172,19 +171,19 @@ void setAlsaMasterVolume(long volume)
  * 6. Clean up PortAudio engine
  */
 int main(int argc, char *argv[]) {
-	bool cVerbose = false;
+	bool cVerbose;
 	std::string cServer;
 	int cPort;
 	std::string cUsername;
 	std::string cPassword;
-	int next_option;
 	int cSampleRate;
 	int cFramePerBuffer;
-	double output_delay = -1.0;
+	int cOpusBitrate;
 	double cVoxThreshold;	// dB
 	std::chrono::duration<double> voice_hold_interval(0.050);	// 50 ms
-	bool voice_target_flag = false;
-	int voice_target = 0;
+	bool mVoiceTargetFlag = false;
+	bool mVoiceTalkFlag = false;
+	int mVoiceTarget = 1;	// voice target id
 
 	// init logger
 	appender->setLayout(new log4cpp::BasicLayout());
@@ -195,23 +194,29 @@ int main(int argc, char *argv[]) {
 	// get configuration
 	///////////////////////
 	boost::property_tree::ptree pt;
-	boost::property_tree::ini_parser::read_ini("configuration.ini", pt);
+	try {
+		boost::property_tree::ini_parser::read_ini("configuration.ini", pt);
+	} catch (boost::property_tree::ptree_error &err) {
+		logger.error("File configuration not found, error %s", err.what());
+		exit(-1);
+	}
 
 	cServer 		= pt.get<std::string>("Server.host", "192.168.2.107");
 	cPort 			= pt.get<int>("Server.port", 64738);
 	cUsername		= pt.get<std::string>("Server.username", "Client1");
 	cPassword		= pt.get<std::string>("Server.password");
 	cVerbose 		= pt.get<bool>("Client.debug", false);
-	cSampleRate 	= pt.get<int>("Client.sampleRate", 48000);
-	cFramePerBuffer	= pt.get<int>("Client.framePerBuffer", 128);
 	cVoxThreshold	= pt.get<double>("Client.voxThreshold", -90);
+	cSampleRate 	= pt.get<int>("Audio.sampleRate", 48000);
+	cFramePerBuffer	= pt.get<int>("Audio.framePerBuffer", 480);
+	cOpusBitrate	= pt.get<int>("Audio.opusBitrate", 16000);
 
 	if(cVerbose)
 		logger.setPriority(log4cpp::Priority::INFO);
 	
 	// check for valid sample rate
-	if(cSampleRate != 48000 && cSampleRate != 24000 && cSampleRate != 12000) {
-		logger.error("--sample-rate option must be 12000, 24000, or 48000");
+	if(cSampleRate != 48000 && cSampleRate != 24000 && cSampleRate != 12000 && cSampleRate != 8000) {
+		logger.error("--sample-rate option must be 8000, 12000, 24000, or 48000");
 		exit(-1);
 	}
 	logger.info("======================================================");
@@ -220,7 +225,10 @@ int main(int argc, char *argv[]) {
 	logger.info("Username:      %s", cUsername.c_str());
 	logger.info("Password		%s", cPassword.c_str());
 	logger.info("Sample Rate:	%d", cSampleRate);
-	logger.info("Vox Threshold  %f", cVoxThreshold);
+	logger.info("Frame per Buffer: %d", cFramePerBuffer);
+	logger.info("Vox Threshold:  %f", cVoxThreshold);
+	logger.info("Opus Bitrate:	%f", cOpusBitrate);
+
 	logger.info("======================================================");
 
 	///////////////////////
@@ -236,14 +244,14 @@ int main(int argc, char *argv[]) {
 	logger.info(Pa_GetVersionText());
 
 	// init audio I/O streams
-	PaStream *input_stream;
-	PaStream *output_stream;
+	PaStream *inputStream;
+	PaStream *outputStream;
 	PaData data;
-	PaStreamParameters inputParameters;
-	PaStreamParameters outputParameters;
+	PaStreamParameters inputParameters{};
+	PaStreamParameters outputParameters{};
 
 	// set ring buffer size to about 500ms
-	const size_t MAX_SAMPLES = nextPowerOf2(0.5 * cSampleRate * NUM_CHANNELS);
+	const size_t MAX_SAMPLES = nextPowerOf2(static_cast<unsigned int>(0.5 * cSampleRate * NUM_CHANNELS));
 	data.rec_buf = std::make_shared<RingBuffer<int16_t>>(MAX_SAMPLES);
 	data.out_buf = std::make_shared<RingBuffer<int16_t>>(MAX_SAMPLES);
 
@@ -255,20 +263,20 @@ int main(int argc, char *argv[]) {
 	inputParameters.channelCount = NUM_CHANNELS;
 	inputParameters.sampleFormat = paInt16;
 	inputParameters.suggestedLatency = Pa_GetDeviceInfo(inputParameters.device)->defaultLowInputLatency;
-	inputParameters.hostApiSpecificStreamInfo = NULL;
+	inputParameters.hostApiSpecificStreamInfo = nullptr;
 
 	logger.info("inputParameters.suggestedLatency: %.4f", inputParameters.suggestedLatency);
 
-	err = Pa_OpenStream(&input_stream,		// the input stream
+	err = Pa_OpenStream(&inputStream,		// the input stream
 						&inputParameters,	// input params
-						NULL,				// output params
+						nullptr,			// output params
 						cSampleRate,		// sample rate
 						cFramePerBuffer,	// frames per buffer
 						paClipOff,			// we won't output out of range samples so don't bother clipping them
 						paRecordCallback,	// PortAudio callback function
 						&data);				// data pointer
 
-	logger.info("defaultHighOutputLatency: %.4f", Pa_GetDeviceInfo(inputParameters.device)->defaultHighOutputLatency);
+	logger.info("defaultHighInputLatency: %.4f", Pa_GetDeviceInfo(inputParameters.device)->defaultHighInputLatency);
 
 	if(err != paNoError) {
 	    logger.error("Failed to open input stream: %s", Pa_GetErrorText(err));
@@ -282,16 +290,13 @@ int main(int argc, char *argv[]) {
 	}
 	outputParameters.channelCount = NUM_CHANNELS;
 	outputParameters.sampleFormat =  paInt16;
-
-	if(output_delay < 0.0)
-		output_delay = Pa_GetDeviceInfo(outputParameters.device)->defaultHighOutputLatency;
-	outputParameters.suggestedLatency = output_delay;
-	outputParameters.hostApiSpecificStreamInfo = NULL;
+	outputParameters.suggestedLatency = Pa_GetDeviceInfo(outputParameters.device)->defaultHighOutputLatency;
+	outputParameters.hostApiSpecificStreamInfo = nullptr;
 
 	logger.info("outputParameters.suggestedLatency: %.4f", outputParameters.suggestedLatency);
 
-	err = Pa_OpenStream(&output_stream,		// the output stream
-						NULL, 				// input params
+	err = Pa_OpenStream(&outputStream,		// the output stream
+						nullptr, 			// input params
 						&outputParameters,	// output params
 						cSampleRate,		// sample rate
 						cFramePerBuffer,	// frames per buffer
@@ -307,13 +312,13 @@ int main(int argc, char *argv[]) {
 	}
 
 	// start the streams
-	err = Pa_StartStream(input_stream);
+	err = Pa_StartStream(inputStream);
 	if(err != paNoError) {
 		logger.error("Failed to start input stream: %s", Pa_GetErrorText(err));
 		exit(-1);
 	}
 
-	err = Pa_StartStream(output_stream);
+	err = Pa_StartStream(outputStream);
 	if(err != paNoError) {
 		logger.error("Failed to start output stream: %s", Pa_GetErrorText(err));
 		exit(-1);
@@ -327,7 +332,9 @@ int main(int argc, char *argv[]) {
 	// This stuff should be on a separate thread
 	MumpiCallback mumble_callback(data.out_buf);
 	mumlib::MumlibConfiguration conf;
-	conf.opusEncoderBitrate = cSampleRate;
+	conf.opusEncoderBitrate = cOpusBitrate;
+    conf.opusSampleRate = cSampleRate;
+	conf.opusChannels = NUM_CHANNELS;
 	mumlib::Mumlib mum(mumble_callback, conf);
 	mumble_callback.mum = &mum;
 
@@ -340,11 +347,12 @@ int main(int argc, char *argv[]) {
 			}catch (mumlib::TransportException &exp) {
 				logger.error("TransportException: %s.", exp.what());
 				logger.error("Attempting to reconnect in 5 s.");
-				// mum.reconnect();
+				mum.disconnect();
 				std::this_thread::sleep_for(std::chrono::seconds(5));
 			}
 		}
 	});
+
 	std::thread mumble_transmitting_thread([&]() {
 		// consumes the data that the input audio thread receives and sends it
 		// through mumble client
@@ -353,7 +361,7 @@ int main(int argc, char *argv[]) {
 		// Opus can encode frames of 2.5, 5, 10, 20, 40, or 60 ms
 		// the Opus RFC 6716 recommends using 20ms frame sizes
 		// so at 48k sample rate, 20ms is 960 samples
-		const int OPUS_FRAME_SIZE = (cSampleRate / 1000.0)*20.0;
+		const auto OPUS_FRAME_SIZE = static_cast<const int>((cSampleRate / 1000.0) * 20.0);
 
 		logger.info("OPUS_FRAME_SIZE: %d", OPUS_FRAME_SIZE);
 
@@ -361,7 +369,7 @@ int main(int argc, char *argv[]) {
 		std::chrono::steady_clock::time_point now;
 		bool voice_hold_flag = false;
 		bool first_run_flag = true;
-		int16_t *out_buf = new int16_t[MAX_SAMPLES];
+		auto *out_buf = new int16_t[MAX_SAMPLES];
 		while(!sig_caught) {
 			if(!data.rec_buf->isEmpty() && data.rec_buf->getRemaining() >= OPUS_FRAME_SIZE) {
 
@@ -376,7 +384,7 @@ int main(int argc, char *argv[]) {
 
 				// do a bulk get and send it through mumble client
 				if(mum.getConnectionState() == mumlib::ConnectionState::CONNECTED) {
-					data.rec_buf->top(out_buf, 0, OPUS_FRAME_SIZE);
+					data.rec_buf->top(out_buf, 0, (size_t) OPUS_FRAME_SIZE);
 
 					// compute RMS of sample window
 					double sum = 0;
@@ -394,7 +402,7 @@ int main(int argc, char *argv[]) {
 
 					if(!first_run_flag) {
 						now = std::chrono::steady_clock::now();
-						auto duration = now - start;
+                        auto duration = now - start;
 						if(duration < voice_hold_interval)
 							voice_hold_flag = true;
 						else
@@ -402,10 +410,10 @@ int main(int argc, char *argv[]) {
 					}
 
 					if(db >= cVoxThreshold || voice_hold_flag)	{ // only tx if vox threshold met
-						// if(voice_target_flag)
-						// 	mum.sendAudioDataTarget(voice_target, out_buf, OPUS_FRAME_SIZE);
-						// else 
-						mum.sendAudioData(out_buf, OPUS_FRAME_SIZE);					
+						if(mVoiceTargetFlag) // switch between whisper or normal transmit
+							mum.sendAudioDataTarget(mVoiceTarget, out_buf, OPUS_FRAME_SIZE);
+						else 
+							mum.sendAudioData(out_buf, OPUS_FRAME_SIZE);					
 
 						if(!voice_hold_flag) {
 							start = std::chrono::steady_clock::now();
@@ -420,33 +428,60 @@ int main(int argc, char *argv[]) {
 		delete[] out_buf;
 	});
 
-	std::thread mumble_gpio_thread([&]() {
-		while(!sig_caught) {
-			// int mumbleChannels;
-			// std::cout << "Change user chanels :";
-			// std::cin >> mumbleChannels;
-			// mum.joinChannel(mumbleChannels);
-			if (mum.getConnectionState() == mumlib::ConnectionState::CONNECTED) {
-				int message;
-				std::cout << "Send messages:";
- 				std::cin >> message;
-				// mum.sendTextMessage("sen message long very long long long");
-				// mum.selfDeaf(true);
-				// mum.joinChannel(1);
-				// mum.joinChannel(message);
-				// mum.sendVoiceTarget(1, message);
-				// setAlsaMasterVolume(message);
-			}
-		}
-	});
+	///////////////////////
+	// init gpio library
+	///////////////////////
+	// GpioController controller;
+
+	/**
+	 * Thread flow
+	 * 1. Check all button/switch state
+	 * 2. If state change, do process
+	 *	- Join channel / set whisper target
+	 *	- Change volume
+	 *	- PTT/Vox transmit
+	 * 3. Show description/process/state on lcd
+	 * 4. Loop until received exit signal
+	 */ 
+	// std::thread mumble_gpio_thread([&]() {
+	// 	while(!sig_caught) {
+	// 		if (mum.getConnectionState() == mumlib::ConnectionState::CONNECTED) {
+	// 			// Check channel switch
+	// 			controller.checkSwitchesChannelId();
+	// 			if (controller.getChannelId() != mum.getChannelId()) {
+	// 				// Check channel All (for whisper)
+	// 				if (controller.getChannelId() == 1000) {
+	// 					bool temp_voice_target_flag = true;
+
+	// 					if (temp_voice_target_flag != mVoiceTargetFlag) {
+	// 						mum.sendVoiceTarget(mVoiceTarget, 0);
+	// 					}						
+	// 				} else {
+	// 					mVoiceTargetFlag = false;
+	// 					mum.joinChannel(controller.getChannelId());
+	// 				}
+	// 			}
+
+	// 			// Check push talk
+	// 			if (controller.checkButtonPushToTalk()) {
+	// 				mVoiceTalkFlag = true;
+	// 			} else {
+	// 				mVoiceTalkFlag = false;
+	// 			}
+
+	// 			// Change lcd view
+	// 		}
+	// 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
+	// 	}
+	// });
 
 	// init signal handler
-	struct sigaction action;
+	struct sigaction action{};
 	action.sa_handler = sigHandler;
 	action.sa_flags = 0;
 	sigemptyset(&action.sa_mask);
-	sigaction(SIGINT, &action, NULL);
-	sigaction(SIGTERM, &action, NULL);
+	sigaction(SIGINT, &action, nullptr);
+	sigaction(SIGTERM, &action, nullptr);
 
 	// busy loop until signal is caught
 	while(!sig_caught) {
@@ -467,10 +502,10 @@ int main(int argc, char *argv[]) {
 		logger.warn("Join audio thread");
 		mumble_transmitting_thread.join();
 	}
-	if(mumble_gpio_thread.joinable()) {
-		logger.warn("Join gpio thread");
-		mumble_gpio_thread.join();
-	}
+	// if(mumble_gpio_thread.joinable()) {
+	// 	logger.warn("Join gpio thread");
+	// 	mumble_gpio_thread.join();
+	// }
 
 	mum.disconnect();
 	if(mumble_main_thread.joinable()) {
@@ -483,15 +518,29 @@ int main(int argc, char *argv[]) {
 	///////////////////////////
 	logger.warn("Cleaning up PortAudio...");
 
+	// stop streams
+	logger.warn("Stop input stream");
+	err = Pa_StopStream(inputStream);
+	if(err != paNoError) {
+		logger.error("Failed to stop input stream: %s", Pa_GetErrorText(err));
+		exit(-1);
+	}
+	logger.warn("Stop output stream");
+	err = Pa_StopStream(outputStream);
+	if(err != paNoError) {
+		logger.error("Failed to stop input stream: %s", Pa_GetErrorText(err));
+		exit(-1);
+	}
+
 	// close streams
 	logger.warn("Closing input stream");
-	err = Pa_CloseStream(input_stream);
+	err = Pa_CloseStream(inputStream);
 	if(err != paNoError) {
-		logger.error("Failed to close inputstream: %s", Pa_GetErrorText(err));
+		logger.error("Failed to close input stream: %s", Pa_GetErrorText(err));
 		exit(-1);
 	}
 	logger.warn("Closing output stream");
-	err = Pa_CloseStream(output_stream);
+	err = Pa_CloseStream(outputStream);
 	if(err != paNoError) {
 		logger.error("Failed to close output stream: %s", Pa_GetErrorText(err));
 		exit(-1);

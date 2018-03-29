@@ -31,12 +31,16 @@
 
 # Build dir
 build/
+cmake-build-debug/
 
 # Deps dir
 deps/
 
 # VS Code
 .vscode
+
+# Intelij
+.idea
 
 ###CMake###
 

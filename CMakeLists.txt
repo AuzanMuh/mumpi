@@ -36,11 +36,11 @@ file(COPY configuration.ini
      DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 # TESTING
 
-#enable_testing()
-#add_subdirectory("${PROJECT_SOURCE_DIR}/deps/googletest")
+enable_testing()
+add_subdirectory("${PROJECT_SOURCE_DIR}/deps/googletest")
 
-#file(GLOB TESTS "test/*.cpp")
+file(GLOB TESTS "test/*.cpp")
 
-#add_executable(runUnitTests ${TESTS})
-#target_link_libraries(runUnitTests gtest gtest_main)
-#add_test(NAME mumpi-test COMMAND runUnitTests)
+add_executable(runUnitTests ${TESTS})
+target_link_libraries(runUnitTests gtest gtest_main)
+add_test(NAME mumpi-test COMMAND runUnitTests)

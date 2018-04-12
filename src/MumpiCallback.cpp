@@ -41,7 +41,7 @@ void MumpiCallback::audio(int target,
                           int sequenceNumber,
                           int16_t *pcm_data,
                           uint32_t pcm_data_size) {
-    _logger.info("Received audio: pcm_data_size: %d", pcm_data_size);
+    _logger.info("Received audio: sessionId: %d, pcm_data_size: %d", sessionId, pcm_data_size);
     if(pcm_data != nullptr) {
         _out_buf->push(pcm_data, 0, pcm_data_size);
     }
@@ -61,4 +61,18 @@ void MumpiCallback::textMessage(uint32_t actor,
                                 std::vector<uint32_t> tree_id,
                                 std::string message) {
     _logger.info("Received text message: %s", message.c_str());
+}
+
+/**
+ * Handles received user state messages
+ * @param  session      session
+ * @param  name         name
+ * @param  channel_id   channel_id
+ */
+void MumpiCallback::userState(int32_t session, int32_t actor, std::string name, int32_t user_id, int32_t channel_id,
+                              int32_t mute, int32_t deaf, int32_t suppress, int32_t self_mute, int32_t self_deaf,
+                              std::string comment, int32_t priority_speaker, int32_t recording) {
+    _logger.info("userState: %s:, session: %d, mute: %d, deaf: %d, suppress: %d, self mute: %d, self deaf: %d, comment: %s, priority speaker: %d, recording: %d",
+                 name.c_str(), session, mute, deaf, suppress, self_mute, self_deaf,
+                 comment.c_str(), priority_speaker, recording);
 }

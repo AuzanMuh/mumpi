@@ -17,6 +17,7 @@ public:
     // member functions
     T& top();
     size_t top(T* dest, int offset, size_t len);
+    size_t top(T* dest, int offset, float multiplier, size_t len);
     size_t topRemaining(T* outbuf);
     void push(T val);
     void push(T* src, int offset, size_t len);
@@ -41,7 +42,7 @@ private:
 /**
  * @brief Default constructor
  *
- * @param size size of ring buffer
+ * @param size  size of ring buffer
  * @tparam T Type the RingBuffer should hold
  */
 template <typename T>
@@ -83,9 +84,9 @@ T& RingBuffer<T>::top() {
 /**
  * @brief Gets the next len elements from the front of the buffer.
  *
- * @param dest destination buffer to store the elements in
- * @param offset offset in dest buffer to start storing
- * @param len number of elements to get
+ * @param dest      destination buffer to store the elements in
+ * @param offset    offset in dest buffer to start storing
+ * @param len       number of elements to get
  * @return number of elements retrieved
  */
 template <typename T>
@@ -105,9 +106,39 @@ size_t RingBuffer<T>::top(T* dest, int offset, size_t len) {
 }
 
 /**
+ * @brief Gets the next len elements from the front of the buffer after multiplier each sample.
+ * https://stackoverflow.com/questions/15776390/controlling-audio-volume-in-real-time
+ *
+ * @param dest      destination buffer to store the elements in
+ * @param offset    offset in dest buffer to start storing
+ * @param multipler multiplier the buffer
+ * @param len       number of elements to get
+ * @return number of elements retrieved
+ */
+template <typename T>
+size_t RingBuffer<T>::top(T* dest, int offset, float multiplier, size_t len) {
+    std::unique_lock<std::recursive_mutex> lock(_mutex);
+    if(!this->isEmpty()) {
+        const size_t ELEMENTS_TO_GET = std::min(getRemaining(), len);
+        for(unsigned i = 0; i < ELEMENTS_TO_GET; i++) {
+            dest[offset+i] = _array[_front];
+            _front = (_front + 1) % _size;
+            _remaining--;
+        }
+
+        for(unsigned i = 0; i < ELEMENTS_TO_GET; i++) {
+            dest[offset+i] *= multiplier;
+        }
+        return ELEMENTS_TO_GET;
+    } else {
+        return 0;
+    }
+}
+
+/**
  * @brief Gets the remaining elements from the front of the buffer
  *
- * @param outbuf destination buffer to store elemetns in
+ * @param outbuf    destination buffer to store elemetns in
  * @return number of elements retrieved
  */
 template <typename T>
@@ -126,7 +157,7 @@ size_t RingBuffer<T>::topRemaining(T* outbuf) {
  * @brief Puts a new element at the end of the buffer, possibly overwriting the front
  * element if the buffer is full.
  *
- * @param val the element to put
+ * @param val       the element to put
  */
 template <typename T>
 void RingBuffer<T>::push(T val) {
@@ -140,9 +171,9 @@ void RingBuffer<T>::push(T val) {
  * @brief Bulk puts new elements at the end of the buffer, possibly overwriting the front
  * elements if the buffer is full.
  *
- * @param src src buffer to push from
- * @param offset offset in src buffer to start copying from
- * @param len number of elements to push
+ * @param src       src buffer to push from
+ * @param offset    offset in src buffer to start copying from
+ * @param len       number of elements to push
  */
 template <typename T>
 void RingBuffer<T>::push(T* src, int offset, size_t len) {

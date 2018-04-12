@@ -32,6 +32,10 @@ public:
                              std::vector<uint32_t> tree_id,
                              std::string message) override;
 
+    virtual void userState(int32_t session, int32_t actor, std::string name, int32_t user_id, int32_t channel_id,
+                            int32_t mute, int32_t deaf, int32_t suppress, int32_t self_mute, int32_t self_deaf,
+                            std::string comment, int32_t priority_speaker, int32_t recording) override;
+
     mumlib::Mumlib *mum;
 private:
     std::shared_ptr<RingBuffer<int16_t>> _out_buf;

@@ -5,6 +5,7 @@
 #include <thread>
 #include <cmath>
 #include <chrono>
+#include <boost/algorithm/string.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/ini_parser.hpp>
 #include <log4cpp/Category.hh>
@@ -108,22 +109,30 @@ static int paOutputCallback(const void *inputBuffer,
 	auto *output_buffer = (int16_t*) outputBuffer;
 	(void) inputBuffer;
 	(void) timeInfo;
-	(void) framesPerBuffer;
 	(void) statusFlags;
+
+	// manipulate the amplitude of a PCM audio stream by applying a multiplier to each sample.
+	// to make audio half as loud (which corresponds to about 6dB of gain reduction), simply multiply each sample by .5. 
+	// https://stackoverflow.com/questions/15776390/controlling-audio-volume-in-real-time
+	float volumeLevelDb = 0.f;
+	const float VOLUME_REFERENCE = 1.f;
+	const float volume_multipler = (VOLUME_REFERENCE * pow(10, (volumeLevelDb / 20.f)));
 
 	// output pcm data to PortAudio's output_buffer by reading from our ring buffer
 	// if we dont have enough samples in our ring buffer, we have to still supply 0s to the output_buffer
 	const size_t requested_samples = (framesPerBuffer * NUM_CHANNELS);
 	const size_t available_samples = pa_data->out_buf->getRemaining();	
-	logger.debug("requested_samples: %d", requested_samples);
-	logger.debug("available_samples: %d", available_samples);
+	logger.info("requested_samples: %d", requested_samples);
+	logger.info("available_samples: %d", available_samples);
 	if(requested_samples > available_samples) {
-		pa_data->out_buf->top(output_buffer, 0, available_samples);
+		pa_data->out_buf->top(output_buffer, 0, volume_multipler, available_samples);
+		// pa_data->out_buf->top(output_buffer, 0, available_samples);
 		for(size_t i = available_samples; i < requested_samples - available_samples; i++) {
 			output_buffer[i] = 0;
 		}
 	} else {
-		pa_data->out_buf->top(output_buffer, 0, requested_samples);
+		pa_data->out_buf->top(output_buffer, 0, volume_multipler, requested_samples);
+		// pa_data->out_buf->top(output_buffer, 0, requested_samples);
 	}
 
 	return result;
@@ -148,15 +157,26 @@ static unsigned nextPowerOf2(unsigned val) {
  * Change device master volume
  * @param valume	input volume
 */
-void setAlsaMasterVolume(long volume)
+void setDeviceMasterVolume(uint volume)
 {
 	std::stringstream command;
 	command << "amixer -D pulse sset Master " << volume << "%";
-	// if (volume >= 0 && volume <= 100) {
-	// 	system(command.str().c_str());
-	// } else {
-	// 	logger.error("Sound volume between 0 - 100");
-	// }
+	if (volume >= 0 && volume <= 100)
+		system(command.str().c_str());
+	else 
+		logger.warn("Sound volume must between 0 - 100");
+}
+
+/*
+ * Command text to speech using flite
+ * Make sure install flite, http://www.festvox.org/flite/
+ * @param text	speech text
+*/
+void textToSpeechCommand(std::string text)
+{
+	std::stringstream command;
+	command << "flite -voice slt -t '" << text << "'";
+	system(command.str().c_str());
 }
 
 /**
@@ -180,10 +200,12 @@ int main(int argc, char *argv[]) {
 	int cFramePerBuffer;
 	int cOpusBitrate;
 	double cVoxThreshold;	// dB
+	std::string cBroadcastTarget;
+	std::vector<std::string> mBroadcastList;
 	std::chrono::duration<double> voice_hold_interval(0.050);	// 50 ms
 	bool mVoiceTargetFlag = false;
-	bool mVoiceTalkFlag = false;
 	int mVoiceTarget = 1;	// voice target id
+	bool isVoiceTargetHasBeenSent = false;
 
 	// init logger
 	appender->setLayout(new log4cpp::BasicLayout());
@@ -210,6 +232,15 @@ int main(int argc, char *argv[]) {
 	cSampleRate 	= pt.get<int>("Audio.sampleRate", 48000);
 	cFramePerBuffer	= pt.get<int>("Audio.framePerBuffer", 480);
 	cOpusBitrate	= pt.get<int>("Audio.opusBitrate", 16000);
+	cBroadcastTarget= pt.get<std::string>("Group.broadcast");
+
+	if(!cBroadcastTarget.empty()) {
+		boost::split(mBroadcastList, cBroadcastTarget, boost::is_any_of(","));
+		
+		// for (auto token : mBroadcastList) {
+		// 	 std::cout << token << std::endl;
+		// }
+	}
 
 	if(cVerbose)
 		logger.setPriority(log4cpp::Priority::INFO);
@@ -228,7 +259,7 @@ int main(int argc, char *argv[]) {
 	logger.info("Frame per Buffer: %d", cFramePerBuffer);
 	logger.info("Vox Threshold:  %f", cVoxThreshold);
 	logger.info("Opus Bitrate:	%f", cOpusBitrate);
-
+	logger.info("Broadcast Target: %s", cBroadcastTarget.c_str());
 	logger.info("======================================================");
 
 	///////////////////////
@@ -335,20 +366,27 @@ int main(int argc, char *argv[]) {
 	conf.opusEncoderBitrate = cOpusBitrate;
     conf.opusSampleRate = cSampleRate;
 	conf.opusChannels = NUM_CHANNELS;
-	mumlib::Mumlib mum(mumble_callback, conf);
-	mumble_callback.mum = &mum;
+	mumlib::Mumlib *mum = new mumlib::Mumlib(mumble_callback, conf);
+	mumble_callback.mum = mum;
 
 	std::thread mumble_main_thread([&]() {		
-		while(!sig_caught) {			
+		while(!sig_caught) {		
 			try {
 				logger.info("Connecting to %s", cServer.c_str());
-				mum.connect(cServer, cPort, cUsername, cPassword);
-				mum.run();
+				mum->connect(cServer, cPort, cUsername, cPassword);
+				mum->run();
 			}catch (mumlib::TransportException &exp) {
 				logger.error("TransportException: %s.", exp.what());
 				logger.error("Attempting to reconnect in 5 s.");
-				mum.disconnect();
+				mum->disconnect();
+
 				std::this_thread::sleep_for(std::chrono::seconds(5));
+				logger.warn("Recreate mumble object");
+				// textToSpeechCommand("Reconnecting");
+				mum = new mumlib::Mumlib(mumble_callback, conf);
+
+				// Reset state
+				isVoiceTargetHasBeenSent = false;
 			}
 		}
 	});
@@ -383,7 +421,7 @@ int main(int argc, char *argv[]) {
 				// if we have just transmitted
 
 				// do a bulk get and send it through mumble client
-				if(mum.getConnectionState() == mumlib::ConnectionState::CONNECTED) {
+				if(mum->getConnectionState() == mumlib::ConnectionState::CONNECTED) {
 					data.rec_buf->top(out_buf, 0, (size_t) OPUS_FRAME_SIZE);
 
 					// compute RMS of sample window
@@ -410,10 +448,10 @@ int main(int argc, char *argv[]) {
 					}
 
 					if(db >= cVoxThreshold || voice_hold_flag)	{ // only tx if vox threshold met
-						if(mVoiceTargetFlag) // switch between whisper or normal transmit
-							mum.sendAudioDataTarget(mVoiceTarget, out_buf, OPUS_FRAME_SIZE);
-						else 
-							mum.sendAudioData(out_buf, OPUS_FRAME_SIZE);					
+						// if(mVoiceTargetFlag) // switch between whisper or normal transmit
+						// 	mum->sendAudioDataTarget(mVoiceTarget, out_buf, OPUS_FRAME_SIZE);
+						// else 
+							mum->sendAudioData(out_buf, OPUS_FRAME_SIZE);	
 
 						if(!voice_hold_flag) {
 							start = std::chrono::steady_clock::now();
@@ -435,45 +473,56 @@ int main(int argc, char *argv[]) {
 
 	/**
 	 * Thread flow
-	 * 1. Check all button/switch state
+	 * 0. Send voice target
+	 * 1. Check all button/switch state [Interface]
 	 * 2. If state change, do process
 	 *	- Join channel / set whisper target
 	 *	- Change volume
 	 *	- PTT/Vox transmit
-	 * 3. Show description/process/state on lcd
-	 * 4. Loop until received exit signal
+	 * 3. Check connection status [Mumble]
+	 * 4. Show description/process/state on lcd
+	 * 5. Loop until received exit signal
 	 */ 
-	// std::thread mumble_gpio_thread([&]() {
-	// 	while(!sig_caught) {
-	// 		if (mum.getConnectionState() == mumlib::ConnectionState::CONNECTED) {
-	// 			// Check channel switch
-	// 			controller.checkSwitchesChannelId();
-	// 			if (controller.getChannelId() != mum.getChannelId()) {
-	// 				// Check channel All (for whisper)
-	// 				if (controller.getChannelId() == 1000) {
-	// 					bool temp_voice_target_flag = true;
+	std::thread mumble_gpio_thread([&]() {
+		while(!sig_caught) {
+			if (mum->getConnectionState() == mumlib::ConnectionState::CONNECTED) {
+				// Send voice target at the first time after connected
+				if(!isVoiceTargetHasBeenSent && !mBroadcastList.empty()) {
+					for(int i = 1; i <= mBroadcastList.size(); i++) {
+						mum->sendVoiceTarget(i, i+1);
+					}
 
-	// 					if (temp_voice_target_flag != mVoiceTargetFlag) {
-	// 						mum.sendVoiceTarget(mVoiceTarget, 0);
-	// 					}						
-	// 				} else {
-	// 					mVoiceTargetFlag = false;
-	// 					mum.joinChannel(controller.getChannelId());
-	// 				}
-	// 			}
+					// Set prepare voice target flag to FALSE
+					isVoiceTargetHasBeenSent = true;
+				}
+				// Check channel switch
+				// controller.checkSwitchesChannelId();
+				// if (controller.getChannelId() != mum.getChannelId()) {
+				// 	// Check channel All (for whisper)
+				// 	if (controller.getChannelId() == 1000) {
+				// 		bool temp_voice_target_flag = true;
 
-	// 			// Check push talk
-	// 			if (controller.checkButtonPushToTalk()) {
-	// 				mVoiceTalkFlag = true;
-	// 			} else {
-	// 				mVoiceTalkFlag = false;
-	// 			}
+				// 		if (temp_voice_target_flag != mVoiceTargetFlag) {
+				// 			mum.sendVoiceTarget(mVoiceTarget, 0);
+				// 		}						
+				// 	} else {
+				// 		mVoiceTargetFlag = false;
+				// 		mum.joinChannel(controller.getChannelId());
+				// 	}
+				// }
 
-	// 			// Change lcd view
-	// 		}
-	// 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
-	// 	}
-	// });
+				// Check push talk
+				// if (controller.checkButtonPushToTalk()) {
+				// 	mVoiceTalkFlag = true;
+				// } else {
+				// 	mVoiceTalkFlag = false;
+				// }
+
+				// Change lcd view
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+		}
+	});
 
 	// init signal handler
 	struct sigaction action{};
@@ -502,12 +551,12 @@ int main(int argc, char *argv[]) {
 		logger.warn("Join audio thread");
 		mumble_transmitting_thread.join();
 	}
-	// if(mumble_gpio_thread.joinable()) {
-	// 	logger.warn("Join gpio thread");
-	// 	mumble_gpio_thread.join();
-	// }
+	if(mumble_gpio_thread.joinable()) {
+		logger.warn("Join gpio thread");
+		mumble_gpio_thread.join();
+	}
 
-	mum.disconnect();
+	mum->disconnect();
 	if(mumble_main_thread.joinable()) {
 		logger.warn("Join main thread");
 		mumble_main_thread.join();
